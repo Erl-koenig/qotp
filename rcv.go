@@ -88,6 +88,7 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 	// Now we need to add the ack to the list even if it's a duplicate,
 	// as the ack may have been lost, we need to send it again
 	rb.ackList = append(rb.ackList, &Ack{streamID: streamID, offset: offset, len: uint16(dataLen)})
+	slog.Debug("Rcv/AddedAck", slog.Uint64("offset", offset), slog.Int("ackListLen", len(rb.ackList)))
 
 	// Check if the incoming segment is completely before the next expected offset.
 	// This means all data in this segment has already been delivered to the user application.

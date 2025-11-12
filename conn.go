@@ -173,6 +173,9 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 	ack := c.rcv.GetSndAck()
 	if ack != nil {
 		ack.rcvWnd = uint64(c.rcv.capacity) - uint64(c.rcv.Size())
+		slog.Debug(" Flush/AckAvailable", gId(), s.debug(), c.debug(), slog.Uint64("offset", ack.offset))
+	} else {
+		slog.Debug(" Flush/NoAck", gId(), s.debug(), c.debug())
 	}
 
 	// Respect pacing
@@ -180,17 +183,17 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 		slog.Debug(" Flush/Pacing", gId(), s.debug(), c.debug(),
 			slog.Uint64("waitTime:ms", (c.nextWriteTime-nowNano)/msNano),
 			slog.Bool("ack?", ack != nil))
-		if ack == nil {
-			return 0, MinDeadLine, nil
-		}
+		//do not sent acks, as this is also data on the line
 		return 0, c.nextWriteTime - nowNano, nil
 	}
 
 	//Respect rwnd
 	if c.dataInFlight+int(c.listener.mtu) > int(c.rcvWndSize) {
-		slog.Debug(" Flush/Rwnd/Rcv", gId(), s.debug(), c.debug(), slog.Bool("ack?", ack != nil))
-		if ack == nil {
-			return 0, MinDeadLine, nil
+		slog.Debug(" Flush/Rwnd/Rcv", gId(), s.debug(), c.debug(), 
+			slog.Bool("ack?", ack != nil))
+		if ack != nil {
+			// Send ACK even if receiver indicated no more data, an ack does not add data
+			return c.writeAck(s, ack, nowNano)
 		}
 		return 0, MinDeadLine, nil
 	}
@@ -199,6 +202,7 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 	msgType := c.msgType()
 	splitData, offset, msgTypeRet, err := c.snd.ReadyToRetransmit(s.streamID, ack, c.listener.mtu, c.rtoNano(), msgType, nowNano)
 	if err != nil {
+		slog.Debug(" Flush/RetransmitError", gId(), s.debug(), c.debug(), slog.Any("error", err))
 		return 0, 0, err
 	}
 
@@ -263,17 +267,24 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 		} else if ack != nil || !c.isInitSentOnSnd {
 			slog.Debug(" Flush/Ack", gId(), s.debug(), c.debug())
 			return c.writeAck(s, ack, nowNano)
+		} else {
+			slog.Debug(" Flush/no", gId(), s.debug(), c.debug())
 		}
 	}
-
+	
+	if ack != nil {
+		// Send ACK if we have something
+		return c.writeAck(s, ack, nowNano)
+	}
+	slog.Debug(" Flush/nada", gId(), s.debug(), c.debug())
 	return 0, MinDeadLine, nil
 }
 
 func (c *Conn) writeAck(s *Stream, ack *Ack, nowNano uint64) (data int, pacingNano uint64, err error) {
 	p := &PayloadHeader{
-		MsgType:    MsgTypeData,
-		Ack:        ack,
-		StreamID:   s.streamID,
+		MsgType:  MsgTypeData,
+		Ack:      ack,
+		StreamID: s.streamID,
 	}
 
 	encData, err := c.encode(p, []byte{}, c.msgType())
@@ -299,5 +310,7 @@ func (c *Conn) debug() slog.Attr {
 		slog.Uint64("rcvWnd", c.rcvWndSize),
 		slog.Uint64("snCrypto", c.snCrypto),
 		slog.Uint64("epochSnd", c.epochCryptoSnd),
-		slog.Uint64("epochRcv", c.epochCryptoRcv))
+		slog.Uint64("epochRcv", c.epochCryptoRcv),
+		slog.Bool("initsent", c.isInitSentOnSnd),
+		slog.Bool("hndshke", c.isHandshakeDoneOnRcv))
 }

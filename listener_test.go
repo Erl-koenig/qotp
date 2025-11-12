@@ -2,6 +2,7 @@ package qotp
 
 import (
 	"crypto/ecdh"
+	"crypto/rand"
 	"fmt"
 	"testing"
 	"github.com/stretchr/testify/assert"
@@ -70,4 +71,98 @@ func TestClose(t *testing.T) {
 	if err != nil {
 		t.Errorf("Expected no error, but got: %v", err)
 	}
+}
+
+func TestStreamWithAdversarialNetwork(t *testing.T) {
+	t.SkipNow()
+	connA, listenerB, connPair := setupStreamTest(t)
+	
+	// Set up adversarial network conditions
+	connPair.Conn1.latencyNano = 50 * msNano
+	connPair.Conn2.latencyNano = 50 * msNano
+	
+	streamA := connA.Stream(0)
+	
+	// Generate random test data (10KB)
+	testDataSize := 10 * 1024
+	testData := make([]byte, testDataSize)
+	_, err := rand.Read(testData)
+	assert.NoError(t, err)
+	
+	// Write data
+	n, err := streamA.Write(testData)
+	assert.NoError(t, err)
+	assert.Equal(t, testDataSize, n)
+	
+	var streamB *Stream
+	receivedData := []byte{}
+	maxIterations := 1000
+	dropCounter := 0
+	
+	for i := 0; i < maxIterations; i++ {
+		// Sender flushes
+		minPacing := connA.listener.Flush(connPair.Conn1.localTime)
+		connPair.Conn1.localTime += max(minPacing, 10*msNano)
+		
+		// Drop every 2nd packet (50% loss)
+		if connPair.nrOutgoingPacketsSender() > 0 {
+			nPackets := connPair.nrOutgoingPacketsSender()
+			pattern := make([]int, nPackets)
+			for j := 0; j < nPackets; j++ {
+				dropCounter++
+				if dropCounter%2 == 0 {
+					pattern[j] = -1 // drop
+				} else {
+					pattern[j] = 1 // deliver
+				}
+			}
+			_, err = connPair.senderToRecipient(pattern...)
+			assert.NoError(t, err)
+		}
+		
+		// Receiver processes
+		s, err := listenerB.Listen(MinDeadLine, connPair.Conn2.localTime)
+		assert.NoError(t, err)
+		if s != nil {
+			streamB = s
+		}
+		
+		// Try to read available data
+		if streamB != nil {
+			data, err := streamB.Read()
+			if err == nil && len(data) > 0 {
+				receivedData = append(receivedData, data...)
+			}
+		}
+		
+		// ALWAYS flush receiver to send ACKs (even if streamB is nil)
+		minPacing = listenerB.Flush(connPair.Conn2.localTime)
+		connPair.Conn2.localTime += max(minPacing, 10*msNano)
+		
+		// Apply same loss pattern to ACKs
+		if connPair.nrOutgoingPacketsReceiver() > 0 {
+			nPackets := connPair.nrOutgoingPacketsReceiver()
+			pattern := make([]int, nPackets)
+			for j := 0; j < nPackets; j++ {
+				dropCounter++
+				if dropCounter%2 == 0 {
+					pattern[j] = -1
+				} else {
+					pattern[j] = 1
+				}
+			}
+			_, err = connPair.recipientToSender(pattern...)
+			assert.NoError(t, err)
+		}
+		
+		// Check if we received all data
+		if len(receivedData) >= testDataSize {
+			t.Logf("Transfer completed in %d iterations", i+1)
+			break
+		}
+	}
+	
+	// Verify data integrity
+	assert.Equal(t, testDataSize, len(receivedData), "should receive all data")
+	assert.Equal(t, testData, receivedData, "received data should match sent data")
 }

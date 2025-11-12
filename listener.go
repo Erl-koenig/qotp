@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"time"
 
 	"sync"
 )
@@ -386,20 +387,25 @@ func (l *Listener) newConn(
 	return conn, nil
 }
 
-func (l *Listener) Loop(callback func(s *Stream) bool) {
+func (l *Listener) Loop(callback func(s *Stream) (bool, error)) {
 	waitNextNano := MinDeadLine
 	for {
-		s, err := l.Listen(waitNextNano, timeNowNano())
+		s, err := l.Listen(waitNextNano, uint64(time.Now().UnixNano()))
 		if err != nil {
 			slog.Error("Error in loop listen", slog.Any("error", err))
+			break
 		}
 		// callback in any case, s may be null, but this gives the user
 		// the control to cancel the Loop every MinDeadLine
-		cont := callback(s)
-		waitNextNano = l.Flush(timeNowNano())
+		cont, err := callback(s)
+		if err != nil {
+			slog.Error("Error in loop callback", slog.Any("error", err))
+			break
+		}
+		waitNextNano = l.Flush(uint64(time.Now().UnixNano()))
 
 		if !cont {
-			return
+			break
 		}
 	}
 }
