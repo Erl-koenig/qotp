@@ -106,7 +106,7 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, rawLen int, nowNano uin
 		} else if ackStatus == AckDup {
 			c.onDuplicateAck()
 		} else {
-			slog.Debug("No stream?")
+			slog.Debug("No stream")
 		}
 		c.rcvWndSize = p.Ack.rcvWnd
 
@@ -119,7 +119,6 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, rawLen int, nowNano uin
 				s.closedAtNano = nowNano
 			}
 		}
-		slog.Debug("  here2")
 
 		if nowNano > sentTimeNano {
 			if ackStatus == AckStatusOk {
@@ -129,7 +128,6 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, rawLen int, nowNano uin
 				return nil, errors.New("stream does not exist")
 			}
 		}
-		slog.Debug("  here3")
 	}
 
 	if len(userData) > 0 {
