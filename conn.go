@@ -2,7 +2,6 @@ package qotp
 
 import (
 	"crypto/ecdh"
-	"errors"
 	"log/slog"
 	"net/netip"
 	"sync"
@@ -120,13 +119,9 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, rawLen int, nowNano uin
 			}
 		}
 
-		if nowNano > sentTimeNano {
-			if ackStatus == AckStatusOk {
-				rttNano := nowNano - sentTimeNano
-				c.updateMeasurements(rttNano, uint64(p.Ack.len), nowNano)
-			} else {
-				return nil, errors.New("stream does not exist")
-			}
+		if nowNano > sentTimeNano && ackStatus == AckStatusOk {
+			rttNano := nowNano - sentTimeNano
+			c.updateMeasurements(rttNano, uint64(p.Ack.len), nowNano)
 		}
 	}
 
@@ -187,7 +182,7 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 
 	//Respect rwnd
 	if c.dataInFlight+int(c.listener.mtu) > int(c.rcvWndSize) {
-		slog.Debug(" Flush/Rwnd/Rcv", gId(), s.debug(), c.debug(), 
+		slog.Debug(" Flush/Rwnd/Rcv", gId(), s.debug(), c.debug(),
 			slog.Bool("ack?", ack != nil))
 		if ack != nil {
 			// Send ACK even if receiver indicated no more data, an ack does not add data

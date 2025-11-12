@@ -325,7 +325,7 @@ func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
 
 		//no data sent, check if we reached the timeout for the activity
 		if conn.lastReadTimeNano != 0 && nowNano > conn.lastReadTimeNano+ReadDeadLine {
-			slog.Info("closing connection, timeout", conn.debug(), slog.Uint64("now", nowNano),
+			slog.Info("close connection, timeout", conn.debug(), slog.Uint64("now", nowNano),
 				slog.Uint64("last", conn.lastReadTimeNano))
 			closeConn = append(closeConn, conn)
 			break

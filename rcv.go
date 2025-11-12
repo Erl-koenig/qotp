@@ -43,6 +43,7 @@ func NewRcvBuffer() *RcvBuffer {
 }
 
 func NewReceiveBuffer(capacity int) *ReceiveBuffer {
+	slog.Debug("Rcv/NewReceiveBuffer")
 	return &ReceiveBuffer{
 		streams:  make(map[uint32]*RcvBuffer),
 		capacity: capacity,
@@ -76,6 +77,7 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 	// Get or create stream buffer
 	stream := rb.streams[streamID]
 	if stream == nil {
+		slog.Debug("Rcv/BufferNotFound", slog.Int("rb.size+dataLen", rb.size+dataLen), slog.Uint64("streamID", uint64(streamID)))
 		stream = NewRcvBuffer()
 		rb.streams[streamID] = stream
 	}
@@ -122,6 +124,7 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 				slog.Int("new_len", dataLen))
 		}
 
+		slog.Debug("Rcv/Ok", slog.Uint64("offset", offset), slog.Int("len(data)", dataLen))
 		stream.segments.Put(offset, RcvValue{data: userData, receiveTimeNano: nowNano})
 		rb.size += dataLen
 		return RcvInsertOk
@@ -204,6 +207,7 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 	}
 
 	// Now we have the correct offset and data slice - store it
+	slog.Debug("Rcv/final", slog.Uint64("offset", finalOffset), slog.Int("len(data)", len(finalUserData)), slog.Uint64("next", stream.nextInOrderOffsetToWaitFor))
 	stream.segments.Put(finalOffset, RcvValue{data: finalUserData, receiveTimeNano: nowNano})
 	rb.size += len(finalUserData)
 
