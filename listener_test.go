@@ -19,7 +19,7 @@ var (
 	hexPubKey2 = fmt.Sprintf("0x%x", testPrvKey2.PublicKey().Bytes())
 )
 
-func TestNewListener(t *testing.T) {
+func TestListenerNewListener(t *testing.T) {
 	// Test case 1: Create a new listener with a valid address
 	listener, err := Listen(WithListenAddr("127.0.0.1:8080"), WithSeed(testPrvSeed1))
 	defer func() {
@@ -40,7 +40,7 @@ func TestNewListener(t *testing.T) {
 	}
 }
 
-func TestNewStream(t *testing.T) {
+func TestListenerNewStream(t *testing.T) {
 	// Test case 1: Create a new multi-stream with a valid remote address
 	listener, err := Listen(WithListenAddr("127.0.0.1:9080"), WithSeed(testPrvSeed1))
 	defer func() {
@@ -62,7 +62,7 @@ func TestNewStream(t *testing.T) {
 
 }
 
-func TestClose(t *testing.T) {
+func TestListenerClose(t *testing.T) {
 	// Test case 1: Close a listener with no multi-streams
 	listener, err := Listen(WithListenAddr("127.0.0.1:9080"), WithSeed(testPrvSeed1))
 	assert.NoError(t, err)
@@ -112,17 +112,27 @@ func runDataTransferTest(t *testing.T, testDataSize int, maxIterations int,
 		// Transfer data packets with loss
 		if connPair.nrOutgoingPacketsSender() > 0 {
 			nPackets := connPair.nrOutgoingPacketsSender()
-			pattern := make([]int, nPackets)
+			toDrop := make([]int, 0)
+			toSend := make([]int, 0, nPackets)
+			
 			for j := 0; j < nPackets; j++ {
 				dropCounterSender++
 				if dataLossFunc(dropCounterSender) {
-					pattern[j] = -1 // drop
+					toDrop = append(toDrop, j)
 				} else {
-					pattern[j] = 1 // deliver
+					toSend = append(toSend, j)
 				}
 			}
-			_, err = connPair.senderToRecipient(pattern...)
-			assert.NoError(t, err)
+			
+			if len(toDrop) > 0 {
+				err = connPair.dropSender(toDrop...)
+				assert.NoError(t, err)
+			}
+			
+			if len(toSend) > 0 {
+				_, err = connPair.senderToRecipient(toSend...)
+				assert.NoError(t, err)
+			}
 		}
 		
 		// Receiver processes incoming data
@@ -147,17 +157,27 @@ func runDataTransferTest(t *testing.T, testDataSize int, maxIterations int,
 		// Transfer ACKs with loss
 		if connPair.nrOutgoingPacketsReceiver() > 0 {
 			nPackets := connPair.nrOutgoingPacketsReceiver()
-			pattern := make([]int, nPackets)
+			toDrop := make([]int, 0)
+			toSend := make([]int, 0, nPackets)
+			
 			for j := 0; j < nPackets; j++ {
 				dropCounterReceiver++
 				if ackLossFunc(dropCounterReceiver) {
-					pattern[j] = -1
+					toDrop = append(toDrop, j)
 				} else {
-					pattern[j] = 1
+					toSend = append(toSend, j)
 				}
 			}
-			_, err = connPair.recipientToSender(pattern...)
-			assert.NoError(t, err)			
+			
+			if len(toDrop) > 0 {
+				err = connPair.dropReceiver(toDrop...)
+				assert.NoError(t, err)
+			}
+			
+			if len(toSend) > 0 {
+				_, err = connPair.recipientToSender(toSend...)
+				assert.NoError(t, err)
+			}
 		}
 		
 		// Check completion
@@ -176,7 +196,7 @@ func runDataTransferTest(t *testing.T, testDataSize int, maxIterations int,
 		testName, maxIterations, len(receivedData), testDataSize)
 }
 
-func TestStreamWithAdversarialNetwork50PercentLoss(t *testing.T) {
+func TestListenerStreamWithAdversarialNetwork50PercentLoss(t *testing.T) {
 	runDataTransferTest(t, 10*1024, 1000,
 		func(counter int) bool { return counter%2 == 0 }, // 50% data loss
 		func(counter int) bool { return counter%2 == 0 }, // 50% ack loss
@@ -184,7 +204,7 @@ func TestStreamWithAdversarialNetwork50PercentLoss(t *testing.T) {
 		"50% Loss")
 }
 
-func TestStreamWith10PercentLoss(t *testing.T) {
+func TestListenerStreamWith10PercentLoss(t *testing.T) {
 	runDataTransferTest(t, 10*1024, 500,
 		func(counter int) bool { return counter%10 == 0 }, // 10% data loss
 		func(counter int) bool { return counter%10 == 0 }, // 10% ack loss
@@ -192,7 +212,7 @@ func TestStreamWith10PercentLoss(t *testing.T) {
 		"10% Loss")
 }
 
-func TestStreamWithAsymmetricLoss(t *testing.T) {
+func TestListenerStreamWithAsymmetricLoss(t *testing.T) {
 	// 20% data loss, 50% ACK loss
 	runDataTransferTest(t, 10*1024, 1000,
 		func(counter int) bool { return counter%5 == 0 },  // 20% data loss
@@ -201,7 +221,7 @@ func TestStreamWithAsymmetricLoss(t *testing.T) {
 		"Asymmetric Loss (20% data, 50% ack)")
 }
 
-func TestStreamWithReordering(t *testing.T) {
+func TestListenerStreamWithReordering(t *testing.T) {
 	connA, listenerB, connPair := setupStreamTest(t)
 	
 	connPair.Conn1.latencyNano = 50 * msNano
@@ -227,16 +247,21 @@ func TestStreamWithReordering(t *testing.T) {
 		minPacing := connA.listener.Flush(connPair.Conn1.localTime)
 		connPair.Conn1.localTime += max(minPacing, 10*msNano)
 		
-		// Reorder packets if we have multiple
+		// Reorder and deliver packets if we have multiple
 		if connPair.nrOutgoingPacketsSender() >= 3 {
-			// Reverse order of first 3 packets: [0,1,2] -> [2,1,0]
-			err = connPair.reorderSender(2, 1, 0)
-			assert.NoError(t, err)
-		}
-		
-		if connPair.nrOutgoingPacketsSender() > 0 {
+			// Reverse order of first 3 packets: [0,1,2] -> [2,1,0], then rest in order
 			nPackets := connPair.nrOutgoingPacketsSender()
-			_, err = connPair.senderToRecipient(nPackets) // deliver all
+			indices := make([]int, nPackets)
+			indices[0] = 2
+			indices[1] = 1
+			indices[2] = 0
+			for j := 3; j < nPackets; j++ {
+				indices[j] = j
+			}
+			_, err = connPair.senderToRecipient(indices...)
+			assert.NoError(t, err)
+		} else if connPair.nrOutgoingPacketsSender() > 0 {
+			_, err = connPair.senderToRecipientAll()
 			assert.NoError(t, err)
 		}
 		
@@ -259,8 +284,7 @@ func TestStreamWithReordering(t *testing.T) {
 		connPair.Conn2.localTime += max(minPacing, 10*msNano)
 		
 		if connPair.nrOutgoingPacketsReceiver() > 0 {
-			nPackets := connPair.nrOutgoingPacketsReceiver()
-			_, err = connPair.recipientToSender(nPackets) // deliver all ACKs
+			_, err = connPair.recipientToSenderAll()
 			assert.NoError(t, err)
 			
 			_, err = connA.listener.Listen(MinDeadLine, connPair.Conn1.localTime)
@@ -278,7 +302,7 @@ func TestStreamWithReordering(t *testing.T) {
 	t.Errorf("Reordering: Failed to complete transfer")
 }
 
-func TestStreamWithHighLatency(t *testing.T) {
+func TestListenerStreamWithHighLatency(t *testing.T) {
 	runDataTransferTest(t, 5*1024, 1000,
 		func(counter int) bool { return counter%5 == 0 }, // 20% data loss
 		func(counter int) bool { return counter%5 == 0 }, // 20% ack loss
@@ -286,7 +310,7 @@ func TestStreamWithHighLatency(t *testing.T) {
 		"High Latency (200ms)")
 }
 
-func TestStreamWithNoLoss(t *testing.T) {
+func TestListenerStreamWithNoLoss(t *testing.T) {
 	runDataTransferTest(t, 10*1024, 500,
 		func(counter int) bool { return false }, // 0% data loss
 		func(counter int) bool { return false }, // 0% ack loss
@@ -294,7 +318,7 @@ func TestStreamWithNoLoss(t *testing.T) {
 		"No Loss")
 }
 
-func TestStreamMultipleStreams(t *testing.T) {
+func TestListenerStreamMultipleStreams(t *testing.T) {
 	connA, listenerB, connPair := setupStreamTest(t)
 	
 	connPair.Conn1.latencyNano = 50 * msNano
@@ -334,17 +358,27 @@ func TestStreamMultipleStreams(t *testing.T) {
 		// Transfer with 30% loss
 		if connPair.nrOutgoingPacketsSender() > 0 {
 			nPackets := connPair.nrOutgoingPacketsSender()
-			pattern := make([]int, nPackets)
+			toDrop := make([]int, 0)
+			toSend := make([]int, 0, nPackets)
+			
 			for j := 0; j < nPackets; j++ {
 				dropCounter++
 				if dropCounter%10 < 3 {
-					pattern[j] = -1
+					toDrop = append(toDrop, j)
 				} else {
-					pattern[j] = 1
+					toSend = append(toSend, j)
 				}
 			}
-			_, err := connPair.senderToRecipient(pattern...)
-			assert.NoError(t, err)
+			
+			if len(toDrop) > 0 {
+				err := connPair.dropSender(toDrop...)
+				assert.NoError(t, err)
+			}
+			
+			if len(toSend) > 0 {
+				_, err := connPair.senderToRecipient(toSend...)
+				assert.NoError(t, err)
+			}
 		}
 		
 		// Receiver processes
@@ -365,17 +399,27 @@ func TestStreamMultipleStreams(t *testing.T) {
 		// Transfer ACKs
 		if connPair.nrOutgoingPacketsReceiver() > 0 {
 			nPackets := connPair.nrOutgoingPacketsReceiver()
-			pattern := make([]int, nPackets)
+			toDrop := make([]int, 0)
+			toSend := make([]int, 0, nPackets)
+			
 			for j := 0; j < nPackets; j++ {
 				dropCounter++
 				if dropCounter%10 < 3 {
-					pattern[j] = -1
+					toDrop = append(toDrop, j)
 				} else {
-					pattern[j] = 1
+					toSend = append(toSend, j)
 				}
 			}
-			_, err = connPair.recipientToSender(pattern...)
-			assert.NoError(t, err)
+			
+			if len(toDrop) > 0 {
+				err = connPair.dropReceiver(toDrop...)
+				assert.NoError(t, err)
+			}
+			
+			if len(toSend) > 0 {
+				_, err = connPair.recipientToSender(toSend...)
+				assert.NoError(t, err)
+			}
 			
 			_, err = connA.listener.Listen(MinDeadLine, connPair.Conn1.localTime)
 			assert.NoError(t, err)
@@ -410,7 +454,7 @@ func TestStreamMultipleStreams(t *testing.T) {
 	}
 }
 
-func TestStreamWithExtremeConditions(t *testing.T) {
+func TestListenerStreamWithExtremeConditions(t *testing.T) {
 	// Test with very small MTU-sized chunks and high loss
 	maxRetry=20
 	ReadDeadLine = uint64(300 * secondNano)

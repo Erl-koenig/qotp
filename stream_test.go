@@ -41,7 +41,7 @@ func TestStreamBasicSendReceive(t *testing.T) {
 	assert.Equal(t, uint64(0), minPacing) // Data was sent, so minPacing should be 0
 
 	// Process and forward the data
-	_, err = connPair.senderToRecipient(1)
+	_, err = connPair.senderToRecipient(0)
 	assert.Nil(t, err)
 
 	// Received data
@@ -97,7 +97,7 @@ func TestStreamMultipleStreamsWithTimeout(t *testing.T) {
 	assert.Nil(t, err)
 	minPacing = listenerB.Flush(connPair.Conn2.partner.localTime)
 
-	_, err = connPair.recipientToSender(1)
+	_, err = connPair.recipientToSender(0)
 	assert.Nil(t, err)
 
 	streamA1 = nil
@@ -108,7 +108,7 @@ func TestStreamMultipleStreamsWithTimeout(t *testing.T) {
 	assert.Nil(t, err)
 	minPacing = connA.listener.Flush(connPair.Conn1.partner.localTime)
 
-	_, err = connPair.senderToRecipient(2)
+	_, err = connPair.senderToRecipient(0, 1)
 	assert.Nil(t, err)
 
 	//twice, as we receive a duplicate packet
@@ -134,27 +134,33 @@ func TestStreamRetransmissionBackoff(t *testing.T) {
 	minPacing := connA.listener.Flush(0)
 	assert.Equal(t, uint64(0), minPacing) // Initial send
 
-	_, err = connPair.senderToRecipient(-1)
+	err = connPair.dropSender(0)
+	assert.Nil(t, err)
 
 	minPacing = connA.listener.Flush((200 * msNano) + 1)
 	assert.Equal(t, uint64(0), minPacing) // First retransmission
 
-	_, err = connPair.senderToRecipient(-1)
+	err = connPair.dropSender(0)
+	assert.Nil(t, err)
 
 	minPacing = connA.listener.Flush(((200 + 400) * msNano) + 2)
 	assert.Equal(t, uint64(0), minPacing) // Second retransmission
 
-	_, err = connPair.senderToRecipient(-1)
+	err = connPair.dropSender(0)
+	assert.Nil(t, err)
 
 	minPacing = connA.listener.Flush(((200 + 400 + 800) * msNano) + 3)
 	assert.Equal(t, uint64(0), minPacing) // Third retransmission
 
-	_, err = connPair.senderToRecipient(-1)
+	err = connPair.dropSender(0)
+	assert.Nil(t, err)
 
 	minPacing = connA.listener.Flush(((200 + 400 + 800 + 1600) * msNano) + 4)
 	assert.Equal(t, uint64(0), minPacing) // Fourth retransmission
 
-	_, err = connPair.senderToRecipient(1)
+	_, err = connPair.senderToRecipient(0)
+	assert.Nil(t, err)
+	
 	var streamB *Stream
 	for i := 0; i < 100 && streamB == nil; i++ {
 		streamB, err = listenerB.Listen(MinDeadLine, connPair.Conn2.partner.localTime)
@@ -174,27 +180,32 @@ func TestStreamMaxRetransmissions(t *testing.T) {
 	minPacing := connA.listener.Flush(connPair.Conn1.partner.localTime)
 	assert.Equal(t, uint64(0), minPacing) // Initial send
 
-	_, err = connPair.senderToRecipient(-1)
+	err = connPair.dropSender(0)
+	assert.Nil(t, err)
 
 	minPacing = connA.listener.Flush((200 * msNano) + 1)
 	assert.Equal(t, uint64(0), minPacing) // First retransmission
 
-	_, err = connPair.senderToRecipient(-1)
+	err = connPair.dropSender(0)
+	assert.Nil(t, err)
 
 	minPacing = connA.listener.Flush(((200 + 400) * msNano) + 2)
 	assert.Equal(t, uint64(0), minPacing) // Second retransmission
 
-	_, err = connPair.senderToRecipient(-1)
+	err = connPair.dropSender(0)
+	assert.Nil(t, err)
 
 	minPacing = connA.listener.Flush(((200 + 400 + 800) * msNano) + 3)
 	assert.Equal(t, uint64(0), minPacing) // Third retransmission
 
-	_, err = connPair.senderToRecipient(-1)
+	err = connPair.dropSender(0)
+	assert.Nil(t, err)
 
 	minPacing = connA.listener.Flush(((200 + 400 + 800 + 1600) * msNano) + 4)
 	assert.Equal(t, uint64(0), minPacing) // Fourth retransmission
 
-	_, err = connPair.senderToRecipient(-1)
+	err = connPair.dropSender(0)
+	assert.Nil(t, err)
 
 	minPacing = connA.listener.Flush(((200 + 400 + 800 + 1600 + 3200) * msNano) + 5)
 	assert.Equal(t, uint64(0), minPacing) // Fifth retransmission
@@ -219,7 +230,7 @@ func TestStreamCloseInitiatedBySender(t *testing.T) {
 	assert.Equal(t, uint64(0), minPacing) // Close packet should be sent
 
 	// Simulate packet transfer (data packet with FIN flag)
-	_, err = connPair.senderToRecipient(1)
+	_, err = connPair.senderToRecipient(0)
 	assert.Nil(t, err)
 
 	// Listener B receives data
@@ -242,7 +253,7 @@ func TestStreamCloseInitiatedBySender(t *testing.T) {
 	// ACK should be sent
 
 	// B sends ACK back to A
-	_, err = connPair.recipientToSender(1)
+	_, err = connPair.recipientToSender(0)
 	assert.Nil(t, err)
 
 	assert.True(t, streamA.IsCloseRequested())
@@ -270,7 +281,7 @@ func TestStreamCloseInitiatedByReceiver(t *testing.T) {
 	assert.Equal(t, uint64(0), minPacing) // Data should be sent
 
 	// Simulate packet transfer (data packet with FIN flag)
-	_, err = connPair.senderToRecipient(1)
+	_, err = connPair.senderToRecipient(0)
 	assert.Nil(t, err)
 
 	// Listener B receives data
@@ -295,7 +306,7 @@ func TestStreamCloseInitiatedByReceiver(t *testing.T) {
 	// Close packet should be sent
 
 	// B sends ACK back to A
-	_, err = connPair.recipientToSender(1)
+	_, err = connPair.recipientToSender(0)
 	assert.Nil(t, err)
 
 	streamA = nil
@@ -382,17 +393,9 @@ func TestStreamDuplicatePacketHandling(t *testing.T) {
 	minPacing := connA.listener.Flush(connPair.Conn1.localTime)
 	assert.Equal(t, uint64(0), minPacing)
 
-	// Send the same packet twice
-	_, err = connPair.senderToRecipient(1)
+	// Send the same packet twice (duplicate by sending index 0 twice)
+	_, err = connPair.senderToRecipient(0, 0)
 	assert.NoError(t, err)
-
-	// Duplicate the packet in receiver's queue manually
-	connPair.Conn2.readQueueMu.Lock()
-	if len(connPair.Conn2.readQueue) > 0 {
-		duplicate := connPair.Conn2.readQueue[0]
-		connPair.Conn2.readQueue = append(connPair.Conn2.readQueue, duplicate)
-	}
-	connPair.Conn2.readQueueMu.Unlock()
 
 	// B receives
 	var streamB *Stream
