@@ -5,7 +5,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/tbocek/qotp"
+	"github.com/qo-proto/qotp"
 )
 
 func repeatText(text string, targetBytes int) []byte {

@@ -5,7 +5,7 @@ import (
 	"log"
 	"bufio"
 	"strings"
-	"github.com/tbocek/qotp"
+	"github.com/qo-proto/qotp"
 )
 func main() {
 	if len(os.Args) < 2 {
