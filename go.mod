@@ -1,4 +1,4 @@
-module github.com/tbocek/qotp
+module github.com/qo-proto/qotp
 
 go 1.25
 
