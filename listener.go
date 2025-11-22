@@ -11,9 +11,8 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
-	"time"
-
 	"sync"
+	"time"
 )
 
 type Listener struct {
@@ -42,8 +41,8 @@ type ListenFunc func(*ListenOption) error
 
 func WithMtu(mtu int) ListenFunc {
 	return func(o *ListenOption) error {
-		if o.seed != nil {
-			return errors.New("seed already set")
+		if o.mtu != 0 {
+			return errors.New("mtu already set")
 		}
 		o.mtu = mtu
 		return nil
@@ -459,4 +458,47 @@ func logKey(w io.Writer, connId uint64, secret []byte, secretId []byte) {
 	if err != nil {
 		slog.Error("Failed to write to key log", "error", err)
 	}
+}
+
+func (l *Listener) DialString(remoteAddrString string) (*Conn, error) {
+	remoteAddr, err := netip.ParseAddrPort(remoteAddrString)
+	if err != nil {
+		return nil, err
+	}
+
+	return l.Dial(remoteAddr)
+}
+
+func (l *Listener) DialWithCryptoString(remoteAddrString string, pubKeyIdRcvHex string) (*Conn, error) {
+	remoteAddr, err := netip.ParseAddrPort(remoteAddrString)
+	if err != nil {
+		return nil, err
+	}
+
+	pubKeyIdRcv, err := decodeHexPubKey(pubKeyIdRcvHex)
+	if err != nil {
+		return nil, err
+	}
+
+	return l.DialWithCrypto(remoteAddr, pubKeyIdRcv)
+}
+
+func (l *Listener) DialWithCrypto(remoteAddr netip.AddrPort, pubKeyIdRcv *ecdh.PublicKey) (*Conn, error) {
+	prvKeyEp, err := generateKey()
+	if err != nil {
+		return nil, err
+	}
+
+	connId := Uint64(prvKeyEp.PublicKey().Bytes())
+	return l.newConn(connId, remoteAddr, prvKeyEp, pubKeyIdRcv, nil, true, true)
+}
+
+func (l *Listener) Dial(remoteAddr netip.AddrPort) (*Conn, error) {
+	prvKeyEp, err := generateKey()
+	if err != nil {
+		return nil, err
+	}
+
+	connId := Uint64(prvKeyEp.PublicKey().Bytes())
+	return l.newConn(connId, remoteAddr, prvKeyEp, nil, nil, true, false)
 }

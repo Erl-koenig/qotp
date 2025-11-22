@@ -55,7 +55,6 @@ type SendBuffer struct {
 
 func NewStreamBuffer() *StreamBuffer {
 	return &StreamBuffer{
-		queuedData:      []byte{},
 		dataInFlightMap: NewLinkedMap[packetKey, *SendInfo](),
 	}
 }
@@ -65,6 +64,24 @@ func NewSendBuffer(capacity int) *SendBuffer {
 		streams:  make(map[uint32]*StreamBuffer),
 		capacity: capacity,
 		mu:       &sync.Mutex{},
+	}
+}
+
+func (sb *SendBuffer) getOrCreateStream(streamID uint32) *StreamBuffer {
+	stream := sb.streams[streamID]
+	if stream == nil {
+		stream = NewStreamBuffer()
+		sb.streams[streamID] = stream
+	}
+	return stream
+}
+
+func newSendInfo(data []byte, nowNano uint64, isPing bool) *SendInfo {
+	return &SendInfo{
+		data:         data,
+		sentNr:       1,
+		sentTimeNano: nowNano,
+		pingRequest:  isPing,
 	}
 }
 
@@ -95,14 +112,7 @@ func (sb *SendBuffer) QueueData(streamId uint32, userData []byte) (n int, status
 	}
 	n = len(chunk)
 
-	// Get or create stream buffer
-	stream := sb.streams[streamId]
-	if stream == nil {
-		stream = NewStreamBuffer()
-		sb.streams[streamId] = stream
-	}
-
-	// Store chunk
+	stream := sb.getOrCreateStream(streamId)
 	stream.queuedData = append(stream.queuedData, chunk...)
 	sb.size += n
 
@@ -113,13 +123,7 @@ func (sb *SendBuffer) QueuePing(streamId uint32) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
-	// Get or create stream buffer
-	stream := sb.streams[streamId]
-	if stream == nil {
-		stream = NewStreamBuffer()
-		sb.streams[streamId] = stream
-	}
-
+	stream := sb.getOrCreateStream(streamId)
 	stream.pingRequest = true
 }
 
@@ -141,13 +145,7 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *A
 	if stream.pingRequest {
 		stream.pingRequest = false
 		key := createPacketKey(stream.bytesSentOffset, 0)
-		m := &SendInfo{
-			data:         []byte{}, // Empty for ping
-			sentNr:       1,
-			sentTimeNano: nowNano,
-			pingRequest:  true,
-		}
-		stream.dataInFlightMap.Put(key, m)
+		stream.dataInFlightMap.Put(key, newSendInfo([]byte{}, nowNano, true))
 		return []byte{}, 0, false
 	}
 
@@ -157,13 +155,7 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *A
 			return nil, 0, false
 		}
 		key := createPacketKey(stream.bytesSentOffset, 0)
-		m := &SendInfo{
-			data:         []byte{}, // Empty for close
-			sentNr:       1,
-			sentTimeNano: nowNano,
-			pingRequest:  false,
-		}
-		stream.dataInFlightMap.Put(key, m)
+		stream.dataInFlightMap.Put(key, newSendInfo([]byte{}, nowNano, false))
 		return []byte{}, key.offset(), true
 	}
 
@@ -181,13 +173,7 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *A
 
 	// Create key and SendInfo with actual data
 	key := createPacketKey(stream.bytesSentOffset, uint16(length))
-	m := &SendInfo{
-		data:         packetData, // Store the actual data
-		sentNr:       1,
-		sentTimeNano: nowNano,
-		pingRequest:  false,
-	}
-	stream.dataInFlightMap.Put(key, m)
+	stream.dataInFlightMap.Put(key, newSendInfo(packetData, nowNano, false))
 
 	// Remove sent data from queue
 	stream.queuedData = stream.queuedData[length:]
@@ -354,13 +340,7 @@ func (sb *SendBuffer) Close(streamID uint32) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
-	// Get or create stream buffer
-	stream := sb.streams[streamID]
-	if stream == nil {
-		stream = NewStreamBuffer()
-		sb.streams[streamID] = stream
-	}
-
+	stream := sb.getOrCreateStream(streamID)
 	if stream.closeAtOffset == nil {
 		// Calculate total offset: sent + queued
 		offset := stream.bytesSentOffset + uint64(len(stream.queuedData))

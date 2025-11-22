@@ -21,13 +21,13 @@ const (
 
 const (
 	CryptoVersion = 0
-	MacSize = 16
-	SnSize  = 6 // Sequence number Size is 48bit / 6 bytes
+	MacSize       = 16
+	SnSize        = 6 // Sequence number Size is 48bit / 6 bytes
 	//MinPayloadSize is the minimum payload Size in bytes. We need at least 8 bytes as
 	// 8 + the MAC Size (16 bytes) is 24 bytes, which is used as the input for
 	// sealing with chacha20poly1305.NewX().
-	
-	PubKeySize     = 32
+
+	PubKeySize         = 32
 	HeaderSize         = 1
 	ConnIdSize         = 8
 	MsgInitFillLenSize = 2

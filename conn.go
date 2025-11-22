@@ -69,9 +69,7 @@ func (c *Conn) Close() {
 	defer c.mu.Unlock()
 
 	for _, s := range c.streams.Iterator(nil) {
-		if s != nil {
-			s.Close()
-		}
+		s.Close()
 	}
 }
 
@@ -109,14 +107,8 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, rawLen int, nowNano uin
 		}
 		c.rcvWndSize = p.Ack.rcvWnd
 
-		closeOffset := c.snd.GetOffsetClosedAt(p.StreamID)
-		if closeOffset != nil {
-			ackedOffset := c.snd.GetOffsetAcked(s.streamID)
-			//it is marked to close
-			if ackedOffset >= *closeOffset {
-				//we got all data, mark as closed
-				s.closedAtNano = nowNano
-			}
+		if c.checkStreamFullyAcked(s.streamID) {
+			s.closedAtNano = nowNano
 		}
 
 		if nowNano > sentTimeNano && ackStatus == AckStatusOk {
@@ -137,6 +129,15 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, rawLen int, nowNano uin
 	}
 
 	return s, nil
+}
+
+func (c *Conn) checkStreamFullyAcked(streamID uint32) bool {
+	closeOffset := c.snd.GetOffsetClosedAt(streamID)
+	if closeOffset == nil {
+		return false
+	}
+	ackedOffset := c.snd.GetOffsetAcked(streamID)
+	return ackedOffset >= *closeOffset
 }
 
 // We need to check if we remove the current state, if yes, then move the state to the previous stream
@@ -201,31 +202,8 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 
 	if splitData != nil {
 		c.onPacketLoss()
-
 		slog.Debug(" Flush/Retransmit", gId(), s.debug(), c.debug())
-
-		p := &PayloadHeader{
-			IsClose:      isClose,
-			Ack:          ack,
-			StreamID:     s.streamID,
-			StreamOffset: offset,
-		}
-
-		encData, err := c.encode(p, splitData, msgType)
-		if err != nil {
-			return 0, 0, err
-		}
-
-		err = c.listener.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, nowNano)
-		if err != nil {
-			return 0, 0, err
-		}
-
-		packetLen := len(splitData)
-		pacingNano = c.calcPacing(uint64(packetLen))
-
-		c.nextWriteTime = nowNano + pacingNano
-		return packetLen, pacingNano, nil
+		return c.sendPacket(s, ack, splitData, offset, isClose, msgType, nowNano, false)
 	}
 
 	//next check if we can send packets, during handshake we can only send 1 packet
@@ -234,29 +212,7 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 
 		if splitData != nil {
 			slog.Debug(" Flush/Send", gId(), s.debug(), c.debug())
-
-			p := &PayloadHeader{
-				IsClose:      isClose,
-				Ack:          ack,
-				StreamID:     s.streamID,
-				StreamOffset: offset,
-			}
-
-			encData, err := c.encode(p, splitData, msgType)
-			if err != nil {
-				return 0, 0, err
-			}
-
-			err = c.listener.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, nowNano)
-			if err != nil {
-				return 0, 0, err
-			}
-
-			packetLen := len(splitData)
-			c.dataInFlight += packetLen
-			pacingNano = c.calcPacing(uint64(len(encData)))
-			c.nextWriteTime = nowNano + pacingNano
-			return packetLen, pacingNano, nil
+			return c.sendPacket(s, ack, splitData, offset, isClose, msgType, nowNano, true)
 		} else if ack != nil || !c.isInitSentOnSnd {
 			slog.Debug(" Flush/Ack", gId(), s.debug(), c.debug())
 			return c.writeAck(s, ack, nowNano)
@@ -266,26 +222,44 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 	}
 
 	if ack != nil {
-		// Send ACK if we have something
 		return c.writeAck(s, ack, nowNano)
 	}
 	slog.Debug(" Flush/nada", gId(), s.debug(), c.debug())
 	return 0, MinDeadLine, nil
 }
 
-func (c *Conn) writeAck(s *Stream, ack *Ack, nowNano uint64) (data int, pacingNano uint64, err error) {
-	// Check if we should set the close flag on this ACK-only packet.
-	isClose := false
-	sndCloseOffset := c.snd.GetOffsetClosedAt(s.streamID)
-	if sndCloseOffset != nil {
-		ackedOffset := c.snd.GetOffsetAcked(s.streamID)
-		// If all data up to close has been sent and acked, we can notify close
-		// Note: This ensures we send a close notification even if ReadyToSend
-		// already sent an empty close packet, as redundant close notifications are safe
-		if ackedOffset >= *sndCloseOffset {
-			isClose = true
-		}
+func (c *Conn) sendPacket(s *Stream, ack *Ack, splitData []byte, offset uint64, isClose bool, msgType CryptoMsgType, nowNano uint64, trackInFlight bool) (data int, pacingNano uint64, err error) {
+	p := &PayloadHeader{
+		IsClose:      isClose,
+		Ack:          ack,
+		StreamID:     s.streamID,
+		StreamOffset: offset,
 	}
+
+	encData, err := c.encode(p, splitData, msgType)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	err = c.listener.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, nowNano)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	packetLen := len(splitData)
+	if trackInFlight {
+		c.dataInFlight += packetLen
+		pacingNano = c.calcPacing(uint64(len(encData)))
+	} else {
+		pacingNano = c.calcPacing(uint64(packetLen))
+	}
+
+	c.nextWriteTime = nowNano + pacingNano
+	return packetLen, pacingNano, nil
+}
+
+func (c *Conn) writeAck(s *Stream, ack *Ack, nowNano uint64) (data int, pacingNano uint64, err error) {
+	isClose := c.checkStreamFullyAcked(s.streamID)
 
 	p := &PayloadHeader{
 		IsClose:  isClose,

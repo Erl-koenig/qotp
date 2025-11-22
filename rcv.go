@@ -26,19 +26,16 @@ type RcvBuffer struct {
 }
 
 type ReceiveBuffer struct {
-	streams    map[uint32]*RcvBuffer
-	lastStream uint32
-	capacity   int // Max buffer size
-	size       int // Current size
-	ackList    []*Ack
-	mu         *sync.Mutex
+	streams  map[uint32]*RcvBuffer
+	capacity int // Max buffer size
+	size     int // Current size
+	ackList  []*Ack
+	mu       *sync.Mutex
 }
 
 func NewRcvBuffer() *RcvBuffer {
 	return &RcvBuffer{
-		segments:                   NewSortedMap[uint64, RcvValue](),
-		nextInOrderOffsetToWaitFor: 0,
-		closeAtOffset:              nil,
+		segments: NewSortedMap[uint64, RcvValue](),
 	}
 }
 
@@ -52,17 +49,19 @@ func NewReceiveBuffer(capacity int) *ReceiveBuffer {
 	}
 }
 
-func (rb *ReceiveBuffer) EmptyInsert(streamID uint32, offset uint64, nowNano uint64) RcvInsertStatus {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-
+func (rb *ReceiveBuffer) getOrCreateStream(streamID uint32) *RcvBuffer {
 	stream := rb.streams[streamID]
 	if stream == nil {
 		stream = NewRcvBuffer()
 		rb.streams[streamID] = stream
 	}
+	return stream
+}
 
-	
+func (rb *ReceiveBuffer) EmptyInsert(streamID uint32, offset uint64, nowNano uint64) RcvInsertStatus {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+
 	rb.ackList = append(rb.ackList, &Ack{streamID: streamID, offset: offset, len: 0})
 
 	return RcvInsertOk
@@ -75,12 +74,7 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 	defer rb.mu.Unlock()
 
 	// Get or create stream buffer
-	stream := rb.streams[streamID]
-	if stream == nil {
-		slog.Debug("Rcv/BufferNotFound", slog.Int("rb.size+dataLen", rb.size+dataLen), slog.Uint64("streamID", uint64(streamID)))
-		stream = NewRcvBuffer()
-		rb.streams[streamID] = stream
-	}
+	stream := rb.getOrCreateStream(streamID)
 
 	if rb.size+dataLen > rb.capacity {
 		slog.Debug("Rcv/BufferFull", slog.Int("rb.size+dataLen", rb.size+dataLen), slog.Int("rb.capacity", rb.capacity))
@@ -161,7 +155,7 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 				slog.Int("overlap_len", int(overlapLen)))
 		}
 	}
-	
+
 	if nextOffset, nextData, exists := stream.segments.Next(offset); exists {
 		ourEnd := finalOffset + uint64(len(finalUserData))
 		if ourEnd > nextOffset {
@@ -218,12 +212,7 @@ func (rb *ReceiveBuffer) Close(streamID uint32, closeOffset uint64) {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 
-	// Get or create stream buffer
-	stream := rb.streams[streamID]
-	if stream == nil {
-		stream = NewRcvBuffer()
-		rb.streams[streamID] = stream
-	}
+	stream := rb.getOrCreateStream(streamID)
 	if stream.closeAtOffset == nil {
 		stream.closeAtOffset = &closeOffset
 	}
