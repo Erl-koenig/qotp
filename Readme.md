@@ -14,7 +14,6 @@ QOTP is P2P-friendly, supporting UDP hole punching, multi-homing (packets from d
 - **BBR congestion control**: Estimates network capacity via bottleneck bandwidth and RTT
 - **Connection-level flow control**: Congestion control at connection level, not per-stream
 - **Simple teardown**: FIN/ACK with timeout
-- **MTU configuration**: No MTU discover, only MTU configuratio, default to 1400 (QUIC has 1200)
 - **Compact**: Goal < 3k LoC (currently ~2.8k LoC source)
 
 In QOTP, there is 1 supported crypto algorithm (curve25519/chacha20-poly1305) as in contrast to TLS with
@@ -36,7 +35,7 @@ only mentions 9 primary RFCs and 48 extensions and informational RFCs, totalling
 
 * Max RTT: Up to 30 seconds connection timeout (no hard RTT limit, but suspicious RTT > 30s logged)
 * Packet identification: Stream offset (24 or 48-bit) + length (16-bit)
-* Default MTU: 1400 bytes (configurable)
+* Default Max Data Transfer: 1400 bytes (configurable)
 * Buffer capacity: 16MB send + 16MB receive (configurable constants)
 * Crypto sequence space: 48-bit sequence number + 47-bit epoch = 2^95 total space
   * Separate from transport layer stream offsets
@@ -54,11 +53,11 @@ only mentions 9 primary RFCs and 48 extensions and informational RFCs, totalling
 
 ```
 Sender → Receiver: InitSnd (unencrypted, 1400 bytes min)
-  - pubKeyEpSnd + pubKeyIdSnd
+  - pubKeyEpSnd + (pubKeyIdSnd)
   - Padded to prevent amplification
 
 Receiver → Sender: InitRcv (encrypted with ECDH)
-  - pubKeyEpRcv + pubKeyIdRcv
+  - pubKeyEpRcv + (pubKeyIdRcv)
   - Can contain payload (perfect forward secrecy)
 
 Both: Data messages (encrypted with shared secret)
@@ -67,12 +66,12 @@ Both: Data messages (encrypted with shared secret)
 **Flow 2: Out-of-band Keys (0-RTT)**
 
 ```
-Sender → Receiver: InitCryptoSnd (encrypted, non-PFS)
-  - pubKeyEpSnd + pubKeyIdSnd
+Sender → Receiver: InitCryptoSnd (encrypted - [prvKeyEpSnd + pubKeyIdRcv], non-PFS)
+  - pubKeyEpSnd + (pubKeyIdSnd)
   - Can contain payload
   - 1400 bytes min with padding
 
-Receiver → Sender: InitCryptoRcv (encrypted, PFS)
+Receiver → Sender: InitCryptoRcv (encrypted - [pubKeyEpSnd + prvKeyEpRcv], PFS)
   - pubKeyEpRcv
   - Can contain payload
 
@@ -114,7 +113,7 @@ MinDataSizeHdr          = 9 bytes (header + connId)
 FooterDataSize          = 22 bytes (6 SN + 16 MAC)
 MinPacketSize           = 39 bytes (9 + 22 + 8)
 
-Default MTU             = 1400 bytes
+Default Max Data Transfer             = 1400 bytes
 Send Buffer Capacity    = 16 MB
 Receive Buffer Capacity = 16 MB
 ```
@@ -232,52 +231,88 @@ QOTP uses deterministic double encryption for sequence numbers and payload:
 
 After decryption, payload contains transport header + data. Min 8 bytes total.
 
-#### Payload Header (Variable Size)
+#### Payload Header Format
 
+**Byte 0 (Header byte):**
 ```
-Byte 0:
-  Bits 0-3: Version
-  Bits 4-5: Message Type
-    00 = DATA
-    01 = PING (empty packet, needs ACK)
-    10 = CLOSE
-    11 = Reserved
-  Bit 6: Offset size (0=24-bit, 1=48-bit)
-  Bit 7: ACK present (0=no, 1=yes)
-
-If ACK present (bit 7 = 1):
-  Bytes 1-4:    Stream ID (32-bit)
-  Bytes 5-7/10: Stream Offset (24 or 48-bit)
-  Bytes 8-9/11-12: Length (16-bit)
-  Byte 10/13:   Receive Window (8-bit, encoded)
-  
-Data section (always present):
-  Bytes X+0-3:     Stream ID (32-bit)
-  Bytes X+4-6/9:   Stream Offset (24 or 48-bit)
-  Bytes X+7/10+:   Data (if length > 0)
+Bits 0-4: Protocol Version (5 bits, currently 0)
+Bits 5-6: Message Type (2 bits)
+Bit 7:    Offset Size (0 = 24-bit, 1 = 48-bit)
 ```
 
-**Window Encoding** (logarithmic compression):
+**Message Type Encoding (bits 5-6):**
 
+| Type | IsClose | Has ACK | Description |
+|------|---------|---------|-------------|
+| `00` | No      | Yes     | DATA with ACK |
+| `01` | No      | No      | DATA without ACK |
+| `10` | Yes     | Yes     | CLOSE with ACK |
+| `11` | Yes     | No      | CLOSE without ACK |
+
+**Message Type Semantics:**
+
+- **Type `00` (DATA with ACK)**: 
+  - Contains acknowledgment for received data
+  - If `userData == nil` (not empty array): ACK-only packet, no stream data header
+  - If `userData == []byte{}` (empty array): PING packet with stream data header
+
+- **Type `01` (DATA without ACK)**:
+  - Pure data transmission, no acknowledgment piggybacked
+  - If `userData == []byte{}` (empty array): PING packet with stream data header
+
+- **Type `10` (CLOSE with ACK)**:
+  - Notifies peer that stream is closing at specified offset
+  - Includes acknowledgment for received data
+
+- **Type `11` (CLOSE without ACK)**:
+  - Notifies peer that stream is closing at specified offset
+  - No acknowledgment piggybacked
+
+**PING packets:**
+- Indicated by `userData == []byte{}` (empty array, not nil)
+- Always include stream data header (StreamID + StreamOffset)
+- Used for keepalive and RTT measurement
+- Require acknowledgment but are not retransmitted if lost
+
+**ACK-only packets:**
+- Indicated by `userData == nil` in type `00` messages
+- Omit stream data header to save space
+- Only contain ACK section
+
+#### Packet Structure
+
+**With ACK + Stream Data (types 00, 01, 10, 11 with userData != nil):**
 ```
-Value  Capacity       Value  Capacity
-0      0 B            50     16 KB
-1      128 B          100    1 MB
-2      256 B          150    96 MB
-10     512 B          200    7 GB
-18     1 KB           250    512 GB
-                      255    ~896 GB (max)
+Byte 0:           Header
+Bytes 1-4:        ACK Stream ID (32-bit) [if type 00 or 10]
+Bytes 5-7/10:     ACK Offset (24 or 48-bit) [if type 00 or 10]
+Bytes 8-9/11-12:  ACK Length (16-bit) [if type 00 or 10]
+Byte 10/13:       ACK Receive Window (8-bit, encoded) [if type 00 or 10]
+Bytes X-X+3:      Stream ID (32-bit)
+Bytes X+4-X+6/9:  Stream Offset (24 or 48-bit)
+Bytes X+7/10+:    User Data (can be empty for PING)
 ```
 
-Formula: `base * (1 + substep/8)` where `base = 2^(highBit)`, highBit derived from encoded value.
+**ACK-only (type 00 with userData == nil):**
+```
+Byte 0:           Header
+Bytes 1-4:        ACK Stream ID (32-bit)
+Bytes 5-7/10:     ACK Offset (24 or 48-bit)
+Bytes 8-9/11-12:  ACK Length (16-bit)
+Byte 10/13:       ACK Receive Window (8-bit, encoded)
+```
 
-#### Message Types
+**Data-only (type 01 with userData):**
+```
+Byte 0:           Header
+Bytes 1-4:        Stream ID (32-bit)
+Bytes 5-7/10:     Stream Offset (24 or 48-bit)
+Bytes 8/11+:      User Data
+```
 
-**DATA**: Normal data transmission with optional ACK piggyback.
+#### Receive Window Encoding
 
-**PING**: Empty packet (length=0) that requires ACK. Not retransmitted if lost. Used for keepalive and RTT measurement.
-
-**CLOSE**: Marks stream closure at current offset. Both sender and receiver can initiate.
+The 8-bit receive window field encodes buffer capacity from 0 to ~896GB using logarithmic encoding with 8 substeps per power of 2:
 
 ### Flow Control and Congestion
 

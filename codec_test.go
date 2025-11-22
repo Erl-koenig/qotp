@@ -106,51 +106,51 @@ func TestCodecConnectionClosed(t *testing.T) {
 
 // Overhead Calculation Tests - Updated to use CalcMaxOverhead function
 func TestCodecOverheadInitSndNoData(t *testing.T) {
-	overhead := calcCryptoOverhead(InitSnd, nil, 100)
+	overhead := calcCryptoOverheadWithData(InitSnd, nil, 100)
 	assert.Equal(t, -1, overhead)
 }
 
 func TestCodecOverheadInitRcvNoAck(t *testing.T) {
-	overhead := calcCryptoOverhead(InitRcv, nil, 100)
-	expected := calcProtoOverhead(false, false) + MinInitRcvSizeHdr + FooterDataSize
+	overhead := calcCryptoOverheadWithData(InitRcv, nil, 100)
+	expected := calcProtoOverhead(false, false, false) + MinInitRcvSizeHdr + FooterDataSize
 	assert.Equal(t, expected, overhead)
 }
 
 func TestCodecOverheadInitCryptoSnd(t *testing.T) {
-	overhead := calcCryptoOverhead(InitCryptoSnd, nil, 100)
-	expected := calcProtoOverhead(false, false) + MinInitCryptoSndSizeHdr + FooterDataSize + MsgInitFillLenSize
+	overhead := calcCryptoOverheadWithData(InitCryptoSnd, nil, 100)
+	expected := calcProtoOverhead(false, false, false) + MinInitCryptoSndSizeHdr + FooterDataSize + MsgInitFillLenSize
 	assert.Equal(t, expected, overhead)
 }
 
 func TestCodecOverheadInitCryptoRcv(t *testing.T) {
-	overhead := calcCryptoOverhead(InitCryptoRcv, nil, 100)
-	expected := calcProtoOverhead(false, false) + MinInitCryptoRcvSizeHdr + FooterDataSize
+	overhead := calcCryptoOverheadWithData(InitCryptoRcv, nil, 100)
+	expected := calcProtoOverhead(false, false, false) + MinInitCryptoRcvSizeHdr + FooterDataSize
 	assert.Equal(t, expected, overhead)
 }
 
 func TestCodecOverheadDataLargeAckOffset(t *testing.T) {
 	ack := &Ack{offset: 0xFFFFFF + 1}
-	overhead := calcCryptoOverhead(Data, ack, 100)
-	expected := calcProtoOverhead(true, true) + MinDataSizeHdr + FooterDataSize
+	overhead := calcCryptoOverheadWithData(Data, ack, 100)
+	expected := calcProtoOverhead(true, true, false) + MinDataSizeHdr + FooterDataSize
 	assert.Equal(t, expected, overhead)
 }
 
 func TestCodecOverheadDataLargeDataOffset(t *testing.T) {
-	overhead := calcCryptoOverhead(Data, nil, 0xFFFFFF+1)
-	expected := calcProtoOverhead(false, true) + MinDataSizeHdr + FooterDataSize
+	overhead := calcCryptoOverheadWithData(Data, nil, 0xFFFFFF+1)
+	expected := calcProtoOverhead(false, true, false) + MinDataSizeHdr + FooterDataSize
 	assert.Equal(t, expected, overhead)
 }
 
 func TestCodecOverheadDataSmallOffsets(t *testing.T) {
 	ack := &Ack{offset: 1000}
-	overhead := calcCryptoOverhead(Data, ack, 2000)
-	expected := calcProtoOverhead(true, false) + MinDataSizeHdr + FooterDataSize
+	overhead := calcCryptoOverheadWithData(Data, ack, 2000)
+	expected := calcProtoOverhead(true, false, false) + MinDataSizeHdr + FooterDataSize
 	assert.Equal(t, expected, overhead)
 }
 
 func TestCodecOverheadDataNoAck(t *testing.T) {
-	overhead := calcCryptoOverhead(Data, nil, 2000)
-	expected := calcProtoOverhead(false, false) + MinDataSizeHdr + FooterDataSize
+	overhead := calcCryptoOverheadWithData(Data, nil, 2000)
+	expected := calcProtoOverhead(false, false, false) + MinDataSizeHdr + FooterDataSize
 	assert.Equal(t, expected, overhead)
 }
 

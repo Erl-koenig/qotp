@@ -8,33 +8,65 @@ import (
 
 func FuzzPayload(f *testing.F) {
 	// Add seed corpus
-	payloads := []*PayloadHeader{
+	payloads := []struct {
+		header *PayloadHeader
+		data   []byte
+	}{
 		{
-			MsgType:      MsgTypeData,
-			StreamID:     1,
-			StreamOffset: 100,
-			Ack:          &Ack{streamID: 10, offset: 200, len: 10, rcvWnd: 1000},
+			// Type 00: DATA with ACK
+			header: &PayloadHeader{
+				StreamID:     1,
+				StreamOffset: 100,
+				Ack:          &Ack{streamID: 10, offset: 200, len: 10, rcvWnd: 1000},
+			},
+			data: []byte("test data"),
 		},
 		{
-			MsgType:      MsgTypePing,
-			StreamID:     5,
-			StreamOffset: 50,
+			// Type 01: DATA no ACK (ping with empty data)
+			header: &PayloadHeader{
+				StreamID:     5,
+				StreamOffset: 50,
+			},
+			data: []byte{},
 		},
 		{
-			MsgType:      MsgTypeClose,
-			StreamID:     10,
-			StreamOffset: 1000,
-			Ack:          &Ack{streamID: 20, offset: 500, len: 100, rcvWnd: 5000},
+			// Type 10: CLOSE with ACK
+			header: &PayloadHeader{
+				IsClose:      true,
+				StreamID:     10,
+				StreamOffset: 1000,
+				Ack:          &Ack{streamID: 20, offset: 500, len: 100, rcvWnd: 5000},
+			},
+			data: []byte("closing"),
 		},
 		{
-			MsgType:      MsgTypeData,
-			StreamID:     math.MaxUint32,
-			StreamOffset: math.MaxUint64,
+			// Type 11: CLOSE no ACK
+			header: &PayloadHeader{
+				IsClose:      true,
+				StreamID:     15,
+				StreamOffset: 200,
+			},
+			data: []byte{},
+		},
+		{
+			// Type 00: regular ack (nil userData, no data header)
+			header: &PayloadHeader{
+				Ack: &Ack{streamID: 30, offset: 300, len: 50, rcvWnd: 2000},
+			},
+			data: nil,
+		},
+		{
+			// Max values
+			header: &PayloadHeader{
+				StreamID:     math.MaxUint32,
+				StreamOffset: math.MaxUint64,
+			},
+			data: []byte("max"),
 		},
 	}
+
 	for _, p := range payloads {
-		originalData := []byte("test data")
-		encoded, _ := EncodePayload(p, originalData)
+		encoded, _ := EncodePayload(p.header, p.data)
 		f.Add(encoded)
 	}
 
@@ -53,14 +85,18 @@ func FuzzPayload(f *testing.F) {
 
 		// Compare data
 		if !bytes.Equal(payloadData, reDecodedData) {
-			t.Fatal("Data mismatch")
+			t.Fatalf("Data mismatch: original=%v, reDecoded=%v", payloadData, reDecodedData)
 		}
 
 		// Compare payload fields
-		if decoded.MsgType != reDecoded.MsgType ||
-			decoded.StreamID != reDecoded.StreamID ||
-			decoded.StreamOffset != reDecoded.StreamOffset {
-			t.Fatal("Payload fields mismatch")
+		if decoded.IsClose != reDecoded.IsClose {
+			t.Fatal("IsClose mismatch")
+		}
+		if decoded.StreamID != reDecoded.StreamID {
+			t.Fatal("StreamID mismatch")
+		}
+		if decoded.StreamOffset != reDecoded.StreamOffset {
+			t.Fatal("StreamOffset mismatch")
 		}
 
 		// Compare Ack
@@ -68,10 +104,14 @@ func FuzzPayload(f *testing.F) {
 			t.Fatal("Ack presence mismatch")
 		}
 		if decoded.Ack != nil {
-			if decoded.Ack.streamID != reDecoded.Ack.streamID ||
-				decoded.Ack.offset != reDecoded.Ack.offset ||
-				decoded.Ack.len != reDecoded.Ack.len {
-				t.Fatal("Ack fields differ")
+			if decoded.Ack.streamID != reDecoded.Ack.streamID {
+				t.Fatal("Ack.streamID mismatch")
+			}
+			if decoded.Ack.offset != reDecoded.Ack.offset {
+				t.Fatal("Ack.offset mismatch")
+			}
+			if decoded.Ack.len != reDecoded.Ack.len {
+				t.Fatal("Ack.len mismatch")
 			}
 			// rcvWnd has lossy encoding - verify both encode to same value
 			enc1 := EncodeRcvWindow(decoded.Ack.rcvWnd)

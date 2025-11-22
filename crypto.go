@@ -519,11 +519,11 @@ func generateKey() (*ecdh.PrivateKey, error) {
 	return prvKey1, nil
 }
 
-func calcCryptoOverhead(msgType CryptoMsgType, ack *Ack, offset uint64) (overhead int) {
+func calcCryptoOverheadWithData(msgType CryptoMsgType, ack *Ack, offset uint64) (overhead int) {
 	hasAck := ack != nil
 	needsExtension := (hasAck && ack.offset > 0xFFFFFF) || offset > 0xFFFFFF
 
-	overhead = calcProtoOverhead(hasAck, needsExtension)
+	overhead = calcProtoOverhead(hasAck, needsExtension, false)
 
 	switch msgType {
 	case InitSnd:

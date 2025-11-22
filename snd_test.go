@@ -255,10 +255,10 @@ func TestSndReadyToSend(t *testing.T) {
 	sb.QueueData(2, []byte("test2"))
 
 	// Basic send
-	data, offset, msgType := sb.ReadyToSend(1, Data, nil, 1000, nowNano)
+	data, offset, isClose := sb.ReadyToSend(1, Data, nil, 1000, nowNano)
 	assert.Equal(t, []byte("test1"), data)
 	assert.Equal(t, uint64(0), offset)
-	assert.Equal(t, MsgTypeData, msgType)
+	assert.False(t, isClose)
 
 	// Verify range tracking
 	stream := sb.streams[1]
@@ -270,16 +270,16 @@ func TestSndReadyToSend(t *testing.T) {
 
 	// Test MTU limiting with small MTU
 	sb.QueueData(3, []byte("toolongdata"))
-	data, offset, msgType = sb.ReadyToSend(3, Data, nil, 15, nowNano)
+	data, offset, isClose = sb.ReadyToSend(3, Data, nil, 15, nowNano)
 	assert.True(t, len(data) <= 15)
 	assert.Equal(t, uint64(0), offset)
-	assert.Equal(t, MsgTypeData, msgType)
+	assert.False(t, isClose)
 
 	// Test no data available
-	data, offset, msgType = sb.ReadyToSend(4, Data, nil, 1000, nowNano)
+	data, offset, isClose = sb.ReadyToSend(4, Data, nil, 1000, nowNano)
 	assert.Nil(t, data)
 	assert.Equal(t, uint64(0), offset)
-	assert.Equal(t, MsgTypeInvalid, msgType)
+	assert.False(t, isClose)
 }
 
 func TestSndReadyToRetransmit(t *testing.T) {
@@ -293,34 +293,34 @@ func TestSndReadyToRetransmit(t *testing.T) {
 	sb.ReadyToSend(2, Data, nil, 1000, 100) // Initial send at time 100
 
 	// Test basic retransmit
-	data, offset, msgType, err := sb.ReadyToRetransmit(1, nil, 1000, 50, Data, 200)
+	data, offset, isClose, err := sb.ReadyToRetransmit(1, nil, 1000, 50, Data, 200)
 	assert.Nil(t, err)
 	assert.Equal(t, []byte("test1"), data)
 	assert.Equal(t, uint64(0), offset)
-	assert.Equal(t, MsgTypeData, msgType)
+	assert.False(t, isClose)
 
-	data, offset, msgType, err = sb.ReadyToRetransmit(2, nil, 1000, 100, Data, 200)
+	data, offset, isClose, err = sb.ReadyToRetransmit(2, nil, 1000, 100, Data, 200)
 	assert.Nil(t, err)
 	assert.Nil(t, data)
 	assert.Equal(t, uint64(0), offset)
-	assert.Equal(t, MsgTypeInvalid, msgType)
+	assert.False(t, isClose)
 
-	data, offset, msgType, err = sb.ReadyToRetransmit(1, nil, 1000, 99, Data, 399)
+	data, offset, isClose, err = sb.ReadyToRetransmit(1, nil, 1000, 99, Data, 399)
 	assert.Nil(t, err)
 	assert.Equal(t, []byte("test1"), data)
 	assert.Equal(t, uint64(0), offset)
-	assert.Equal(t, MsgTypeData, msgType)
+	assert.False(t, isClose)
 
 	// Test MTU split scenario
 	sb2 := NewSendBuffer(1000)
 	sb2.QueueData(1, []byte("testdata"))
 	sb2.ReadyToSend(1, Data, nil, 1000, 100)
 
-	data, offset, msgType, err = sb2.ReadyToRetransmit(1, nil, 20, 99, Data, 200)
+	data, offset, isClose, err = sb2.ReadyToRetransmit(1, nil, 20, 99, Data, 200)
 	assert.Nil(t, err)
 	assert.True(t, len(data) <= 20)
 	assert.Equal(t, uint64(0), offset)
-	assert.Equal(t, MsgTypeData, msgType)
+	assert.False(t, isClose)
 
 	stream := sb2.streams[1]
 	assert.True(t, stream.dataInFlightMap.Size() >= 1)
@@ -336,9 +336,9 @@ func TestSndMultipleStreams(t *testing.T) {
 	sb.QueueData(2, []byte("stream2"))
 	sb.QueueData(3, []byte("stream3"))
 
-	data1, offset1, msgType1 := sb.ReadyToSend(1, Data, nil, 1000, 100)
-	data2, offset2, msgType2 := sb.ReadyToSend(2, Data, nil, 1000, 200)
-	data3, offset3, msgType3 := sb.ReadyToSend(3, Data, nil, 1000, 300)
+	data1, offset1, isClose1 := sb.ReadyToSend(1, Data, nil, 1000, 100)
+	data2, offset2, isClose2 := sb.ReadyToSend(2, Data, nil, 1000, 200)
+	data3, offset3, isClose3 := sb.ReadyToSend(3, Data, nil, 1000, 300)
 
 	assert.Equal(t, []byte("stream1"), data1)
 	assert.Equal(t, []byte("stream2"), data2)
@@ -346,9 +346,9 @@ func TestSndMultipleStreams(t *testing.T) {
 	assert.Equal(t, uint64(0), offset1)
 	assert.Equal(t, uint64(0), offset2)
 	assert.Equal(t, uint64(0), offset3)
-	assert.Equal(t, MsgTypeData, msgType1)
-	assert.Equal(t, MsgTypeData, msgType2)
-	assert.Equal(t, MsgTypeData, msgType3)
+	assert.False(t, isClose1)
+	assert.False(t, isClose2)
+	assert.False(t, isClose3)
 
 	assert.Equal(t, 1, sb.streams[1].dataInFlightMap.Size())
 	assert.Equal(t, 1, sb.streams[2].dataInFlightMap.Size())
@@ -374,11 +374,11 @@ func TestSndRetransmitWithGaps(t *testing.T) {
 	assert.Equal(t, 1, stream.dataInFlightMap.Size())
 	
 	// Retransmit the first packet (still in flight)
-	data, offset, msgType, err := sb.ReadyToRetransmit(1, nil, 44, 50, Data, 200)
+	data, offset, isClose, err := sb.ReadyToRetransmit(1, nil, 44, 50, Data, 200)
 	assert.Nil(t, err)
 	assert.Equal(t, []byte("01234"), data)
 	assert.Equal(t, uint64(0), offset)
-	assert.Equal(t, MsgTypeData, msgType)
+	assert.False(t, isClose)
 }
 
 func TestSndCloseBeforeSend(t *testing.T) {
@@ -392,10 +392,10 @@ func TestSndCloseBeforeSend(t *testing.T) {
 	assert.Equal(t, uint64(4), *stream.closeAtOffset)
 
 	// Send should include close flag
-	data, offset, msgType := sb.ReadyToSend(1, Data, nil, 43, 100)
+	data, offset, isClose := sb.ReadyToSend(1, Data, nil, 43, 100)
 	assert.Equal(t, []byte("test"), data)
 	assert.Equal(t, uint64(0), offset)
-	assert.Equal(t, MsgTypeClose, msgType)
+	assert.True(t, isClose)
 	assert.Equal(t, 1, stream.dataInFlightMap.Size())
 }
 
@@ -405,9 +405,9 @@ func TestSndCloseAfterPartialSend(t *testing.T) {
 	sb.QueueData(1, []byte("0123456789"))
 
 	// Send first 5 bytes
-	data, offset, msgType := sb.ReadyToSend(1, Data, nil, 44, 100)
+	data, offset, isClose := sb.ReadyToSend(1, Data, nil, 44, 100)
 	assert.Equal(t, 5, len(data))
-	assert.Equal(t, MsgTypeData, msgType)
+	assert.False(t, isClose)
 
 	// Close after partial send
 	sb.Close(1)
@@ -415,10 +415,10 @@ func TestSndCloseAfterPartialSend(t *testing.T) {
 	assert.Equal(t, uint64(10), *stream.closeAtOffset)
 
 	// Next send should have close flag
-	data, offset, msgType = sb.ReadyToSend(1, Data, nil, 44, 100)
+	data, offset, isClose = sb.ReadyToSend(1, Data, nil, 44, 100)
 	assert.Equal(t, []byte("56789"), data)
 	assert.Equal(t, uint64(5), offset)
-	assert.Equal(t, MsgTypeClose, msgType)
+	assert.True(t, isClose)
 }
 
 func TestSndCloseAfterAllDataSent(t *testing.T) {
@@ -433,10 +433,10 @@ func TestSndCloseAfterAllDataSent(t *testing.T) {
 	assert.Equal(t, uint64(4), *stream.closeAtOffset)
 
 	// Should send empty packet with close flag
-	data, offset, msgType := sb.ReadyToSend(1, Data, nil, 43, 100)
+	data, offset, isClose := sb.ReadyToSend(1, Data, nil, 43, 100)
 	assert.Equal(t, []byte{}, data)
 	assert.Equal(t, uint64(4), offset)
-	assert.Equal(t, MsgTypeClose, msgType)
+	assert.True(t, isClose)
 	assert.Equal(t, 2, stream.dataInFlightMap.Size())
 }
 
@@ -451,10 +451,10 @@ func TestSndCloseEmptyStream(t *testing.T) {
 	assert.Equal(t, uint64(0), *stream.closeAtOffset)
 
 	// Try to send - should get empty packet with close flag
-	data, offset, msgType := sb.ReadyToSend(1, Data, nil, 43, 100)
+	data, offset, isClose := sb.ReadyToSend(1, Data, nil, 43, 100)
 	assert.Equal(t, []byte{}, data)
 	assert.Equal(t, uint64(0), offset)
-	assert.Equal(t, MsgTypeClose, msgType)
+	assert.True(t, isClose)
 	assert.Equal(t, 1, stream.dataInFlightMap.Size())
 }
 
@@ -468,16 +468,16 @@ func TestSndCloseMultipleSplits(t *testing.T) {
 	sb.ReadyToSend(1, Data, nil, 1000, 100)
 
 	// Force 3 splits
-	data1, offset1, msgType1, _ := sb.ReadyToRetransmit(1, nil, 49, 50, Data, 200)
-	assert.Equal(t, MsgTypeData, msgType1)
+	data1, offset1, isClose1, _ := sb.ReadyToRetransmit(1, nil, 49, 50, Data, 200)
+	assert.False(t, isClose1)
 	assert.Equal(t, uint64(0), offset1)
 
-	data2, offset2, msgType2, _ := sb.ReadyToRetransmit(1, nil, 49, 50, Data, 300)
-	assert.Equal(t, MsgTypeData, msgType2)
+	data2, offset2, isClose2, _ := sb.ReadyToRetransmit(1, nil, 49, 50, Data, 300)
+	assert.False(t, isClose2)
 	assert.Equal(t, uint64(len(data1)), offset2)
 
-	data3, offset3, msgType3, _ := sb.ReadyToRetransmit(1, nil, 49, 50, Data, 400)
-	assert.Equal(t, MsgTypeClose, msgType3)
+	data3, offset3, isClose3, _ := sb.ReadyToRetransmit(1, nil, 49, 50, Data, 400)
+	assert.True(t, isClose3)
 	assert.Equal(t, uint64(len(data1)+len(data2)), offset3)
 	assert.Equal(t, 30, len(data1)+len(data2)+len(data3))
 }
@@ -497,16 +497,16 @@ func TestSndQueueAfterClose(t *testing.T) {
 	assert.Equal(t, uint64(4), *sb.streams[1].closeAtOffset)
 
 	// First send gets "test" with close flag
-	data, offset, msgType := sb.ReadyToSend(1, Data, nil, 43, 100)
+	data, offset, isClose := sb.ReadyToSend(1, Data, nil, 43, 100)
 	assert.Equal(t, []byte("test"), data)
 	assert.Equal(t, uint64(0), offset)
-	assert.Equal(t, MsgTypeClose, msgType)
+	assert.True(t, isClose)
 
 	// Second send gets "more" WITH close flag
-	data, offset, msgType = sb.ReadyToSend(1, Data, nil, 43, 100)
+	data, offset, isClose = sb.ReadyToSend(1, Data, nil, 43, 100)
 	assert.Equal(t, []byte("more"), data)
 	assert.Equal(t, uint64(4), offset)
-	assert.Equal(t, MsgTypeClose, msgType)
+	assert.True(t, isClose)
 }
 
 func TestSndCloseRetransmitKeepsFlag(t *testing.T) {
@@ -516,16 +516,16 @@ func TestSndCloseRetransmitKeepsFlag(t *testing.T) {
 	sb.Close(1)
 
 	// Send with close flag
-	data, _, msgType := sb.ReadyToSend(1, Data, nil, 1000, 100)
+	data, _, isClose := sb.ReadyToSend(1, Data, nil, 1000, 100)
 	assert.Equal(t, []byte("testdata"), data)
-	assert.Equal(t, MsgTypeClose, msgType)
+	assert.True(t, isClose)
 
 	// Retransmit should preserve close flag
-	data, offset, msgType, err := sb.ReadyToRetransmit(1, nil, 1000, 50, Data, 200)
+	data, offset, isClose, err := sb.ReadyToRetransmit(1, nil, 1000, 50, Data, 200)
 	assert.Nil(t, err)
 	assert.Equal(t, []byte("testdata"), data)
 	assert.Equal(t, uint64(0), offset)
-	assert.Equal(t, MsgTypeClose, msgType)
+	assert.True(t, isClose)
 }
 
 func TestSndCloseRetransmitSplitCorrectFlag(t *testing.T) {
@@ -538,18 +538,18 @@ func TestSndCloseRetransmitSplitCorrectFlag(t *testing.T) {
 	sb.ReadyToSend(1, Data, nil, 1000, 100)
 
 	// Retransmit with small MTU forcing split
-	data, offset, msgType, err := sb.ReadyToRetransmit(1, nil, 45, 50, Data, 200)
+	data, offset, isClose, err := sb.ReadyToRetransmit(1, nil, 45, 50, Data, 200)
 	assert.Nil(t, err)
 	assert.Equal(t, 6, len(data))
 	assert.Equal(t, uint64(0), offset)
-	assert.Equal(t, MsgTypeData, msgType) // Not at close point yet
+	assert.False(t, isClose) // Not at close point yet
 
 	// Retransmit remaining
-	data, offset, msgType, err = sb.ReadyToRetransmit(1, nil, 45, 50, Data, 300)
+	data, offset, isClose, err = sb.ReadyToRetransmit(1, nil, 45, 50, Data, 300)
 	assert.Nil(t, err)
 	assert.Equal(t, 4, len(data))
 	assert.Equal(t, uint64(6), offset)
-	assert.Equal(t, MsgTypeClose, msgType) // Ends at close point
+	assert.True(t, isClose) // Ends at close point
 }
 
 func TestSndCloseEmptyPacketRetransmit(t *testing.T) {
@@ -563,36 +563,36 @@ func TestSndCloseEmptyPacketRetransmit(t *testing.T) {
 	sb.Close(1)
 
 	// Send empty close packet
-	data, offset, msgType := sb.ReadyToSend(1, Data, nil, 43, 100)
+	data, offset, isClose := sb.ReadyToSend(1, Data, nil, 43, 100)
 	assert.Equal(t, []byte{}, data)
 	assert.Equal(t, uint64(4), offset)
-	assert.Equal(t, MsgTypeClose, msgType)
+	assert.True(t, isClose)
 
 	// Retransmit empty close packet
-	data, offset, msgType, err := sb.ReadyToRetransmit(1, nil, 43, 50, Data, 200)
+	data, offset, isClose, err := sb.ReadyToRetransmit(1, nil, 43, 50, Data, 200)
 	assert.Nil(t, err)
 	assert.Equal(t, []byte{}, data)
 	assert.Equal(t, uint64(4), offset)
-	assert.Equal(t, MsgTypeClose, msgType)
+	assert.True(t, isClose)
 }
 
 func TestSndPingTimeout(t *testing.T) {
 	sb := NewSendBuffer(1000)
 	sb.QueuePing(1)
 
-	data, offset, msgType := sb.ReadyToSend(1, Data, nil, 43, 100)
+	data, offset, isClose := sb.ReadyToSend(1, Data, nil, 43, 100)
 	assert.Equal(t, []byte{}, data)
 	assert.Equal(t, uint64(0), offset)
-	assert.Equal(t, MsgTypePing, msgType)
+	assert.False(t, isClose)
 
 	stream := sb.streams[1]
 	assert.Equal(t, 1, stream.dataInFlightMap.Size())
 
 	// Timeout - should remove without retransmit
-	data, offset, msgType, err := sb.ReadyToRetransmit(1, nil, 43, 50, Data, 200)
+	data, offset, isClose, err := sb.ReadyToRetransmit(1, nil, 43, 50, Data, 200)
 	assert.Nil(t, err)
 	assert.Nil(t, data)
 	assert.Equal(t, uint64(0), offset)
-	assert.Equal(t, MsgTypeInvalid, msgType)
+	assert.False(t, isClose)
 	assert.Equal(t, 0, stream.dataInFlightMap.Size())
 }

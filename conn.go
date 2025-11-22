@@ -127,13 +127,13 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, rawLen int, nowNano uin
 
 	if len(userData) > 0 {
 		c.rcv.Insert(s.streamID, p.StreamOffset, nowNano, userData)
-	} else if p.MsgType == MsgTypeClose || p.MsgType == MsgTypePing {
+	} else if p.IsClose || userData != nil { //nil is not a ping, just an ack
 		c.rcv.EmptyInsert(s.streamID, p.StreamOffset, nowNano)
 	}
 
-	if p.MsgType == MsgTypeClose {
-		c.rcv.Close(s.streamID, p.StreamOffset)
-		c.snd.Close(s.streamID) //also close the send buffer at the current location
+	if p.IsClose {
+		c.rcv.Close(s.streamID, p.StreamOffset) //mark the stream closed at the just received offset
+		c.snd.Close(s.streamID)                 //also close the send buffer at the current location
 	}
 
 	return s, nil
@@ -193,7 +193,7 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 
 	// Retransmission case
 	msgType := c.msgType()
-	splitData, offset, msgTypeRet, err := c.snd.ReadyToRetransmit(s.streamID, ack, c.listener.mtu, c.rtoNano(), msgType, nowNano)
+	splitData, offset, isClose, err := c.snd.ReadyToRetransmit(s.streamID, ack, c.listener.mtu, c.rtoNano(), msgType, nowNano)
 	if err != nil {
 		slog.Debug(" Flush/RetransmitError", gId(), s.debug(), c.debug(), slog.Any("error", err))
 		return 0, 0, err
@@ -205,7 +205,7 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 		slog.Debug(" Flush/Retransmit", gId(), s.debug(), c.debug())
 
 		p := &PayloadHeader{
-			MsgType:      msgTypeRet,
+			IsClose:      isClose,
 			Ack:          ack,
 			StreamID:     s.streamID,
 			StreamOffset: offset,
@@ -230,13 +230,13 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 
 	//next check if we can send packets, during handshake we can only send 1 packet
 	if c.isHandshakeDoneOnRcv || !c.isInitSentOnSnd {
-		splitData, offset, msgTypeSnd := c.snd.ReadyToSend(s.streamID, msgType, ack, c.listener.mtu, nowNano)
+		splitData, offset, isClose := c.snd.ReadyToSend(s.streamID, msgType, ack, c.listener.mtu, nowNano)
 
 		if splitData != nil {
 			slog.Debug(" Flush/Send", gId(), s.debug(), c.debug())
 
 			p := &PayloadHeader{
-				MsgType:      msgTypeSnd,
+				IsClose:      isClose,
 				Ack:          ack,
 				StreamID:     s.streamID,
 				StreamOffset: offset,
@@ -264,7 +264,7 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 			slog.Debug(" Flush/no", gId(), s.debug(), c.debug())
 		}
 	}
-	
+
 	if ack != nil {
 		// Send ACK if we have something
 		return c.writeAck(s, ack, nowNano)
@@ -274,13 +274,26 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 }
 
 func (c *Conn) writeAck(s *Stream, ack *Ack, nowNano uint64) (data int, pacingNano uint64, err error) {
+	// Check if we should set the close flag on this ACK-only packet.
+	isClose := false
+	sndCloseOffset := c.snd.GetOffsetClosedAt(s.streamID)
+	if sndCloseOffset != nil {
+		ackedOffset := c.snd.GetOffsetAcked(s.streamID)
+		// If all data up to close has been sent and acked, we can notify close
+		// Note: This ensures we send a close notification even if ReadyToSend
+		// already sent an empty close packet, as redundant close notifications are safe
+		if ackedOffset >= *sndCloseOffset {
+			isClose = true
+		}
+	}
+
 	p := &PayloadHeader{
-		MsgType:  MsgTypeData,
+		IsClose:  isClose,
 		Ack:      ack,
 		StreamID: s.streamID,
 	}
 
-	encData, err := c.encode(p, []byte{}, c.msgType())
+	encData, err := c.encode(p, nil, c.msgType())
 	if err != nil {
 		return 0, 0, err
 	}
